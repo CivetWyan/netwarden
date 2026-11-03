@@ -1,0 +1,13 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { ROOT } from '../src/store.mjs';
+const source = path.resolve(process.argv[2] || path.join(ROOT, '..', 'HCIA知识库', 'data'));
+const destination = path.join(ROOT, 'knowledge');
+const content = fs.readFileSync(path.join(source, 'chunks.jsonl'));
+const chunks = content.toString('utf8').trim().split('\n').map(l => JSON.parse(l));
+if (!chunks.length || chunks.some(c => !c.id || typeof c.text !== 'string')) throw Error('知识片段格式无效');
+fs.mkdirSync(destination, { recursive: true });
+fs.writeFileSync(path.join(destination, 'chunks.jsonl'), content);
+fs.writeFileSync(path.join(destination, 'manifest.json'), JSON.stringify({ importedAt: new Date().toISOString(), source: 'HCIA知识库/data/chunks.jsonl（只读复制）', chunks: chunks.length, sha256: crypto.createHash('sha256').update(content).digest('hex') }, null, 2));
+console.log(`已只读导入 ${chunks.length} 个片段至 ${destination}；原始资料未修改。`);

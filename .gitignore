@@ -1,0 +1,58 @@
+# Allow-list: everything is ignored unless explicitly listed below, so local runtime data,
+# credentials, deployment notes and test artifacts can never be committed by accident.
+/*
+
+!/.gitignore
+!/.npmrc
+!/LICENSE
+!/README.md
+!/package.json
+!/package-lock.json
+!/启动.sh
+!/启动.command
+!/启动.bat
+
+!/src/
+!/ui/
+!/electron/
+!/tests/
+
+!/scripts/
+# Host-specific acceptance script (talks to one particular server).
+/scripts/test-remote-web.mjs
+
+!/docs/
+/docs/*
+!/docs/xiaomi-router.md
+
+!/deploy/
+/deploy/*
+!/deploy/README.md
+!/deploy/config.example.json
+!/deploy/model.env.example
+!/deploy/network-repair-master.service
+!/deploy/warm-model.mjs
+!/deploy/systemd/
+
+# Knowledge data is user-supplied (HCIA notes, device manuals); only the format notes are shared.
+!/knowledge/
+/knowledge/*
+!/knowledge/README.md
+
+# Never commit, even inside allowed folders.
+node_modules/
+.cache/
+runtime/
+runtime-service/
+test-results/
+release/
+models/
+vendor/
+deploy/model.env
+*.log
+*.tar.gz
+secret.json
+online-secret.json
+router-secret.json
+web-access.json
+.DS_Store

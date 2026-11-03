@@ -1,0 +1,58 @@
+{
+  "model": {
+    "baseUrl": "http://127.0.0.1:18080/v1",
+    "name": "netwarden-qwen",
+    "mode": "native",
+    "contextChars": 24000,
+    "maxTokens": 3072,
+    "maxTurns": 10,
+    "reasoningEffort": "none",
+    "timeoutMs": 120000
+  },
+  "repair": {
+    "enabled": false,
+    "allowReconnect": true,
+    "allowDhcp": true,
+    "allowDnsChange": false,
+    "fastDecision": true,
+    "votes": 3,
+    "maxActions": 4
+  },
+  "onlineModel": {
+    "baseUrl": "https://api.deepseek.com/v1",
+    "name": "deepseek-flash"
+  },
+  "review": {
+    "enabled": false,
+    "upload": "auto",
+    "privacy": "network"
+  },
+  "scripts": {
+    "enabled": false,
+    "approval": "automatic"
+  },
+  "patrol": {
+    "enabled": true,
+    "intervalMs": 900000
+  },
+  "agent": {
+    "autoResume": true,
+    "semanticCompact": true,
+    "goalChecks": true
+  },
+  "router": {
+    "enabled": false,
+    "host": "",
+    "allowRestore": true,
+    "allowReconnect": true,
+    "allowReboot": true,
+    "allowIdentityChange": false,
+    "identityIps": [],
+    "baselineSettleMs": 600000
+  },
+  "monitor": {
+    "intervalMs": 1500,
+    "probeTimeoutMs": 2000,
+    "dnsCanary": "baidu.com"
+  }
+}

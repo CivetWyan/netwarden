@@ -1,0 +1,24 @@
+# User-level unit: ~/.config/systemd/user/netwarden-agent.service
+# Replace %h/netwarden with the project directory if it lives elsewhere.
+# Enable lingering so it keeps running without a login session: loginctl enable-linger $USER
+[Unit]
+Description=Netwarden local network administrator
+Wants=netwarden-model.service
+After=netwarden-model.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/netwarden
+ExecStart=/usr/bin/env node %h/netwarden/src/daemon.mjs
+Environment=NETWORK_REPAIR_HOME=%h/netwarden/runtime-service
+# 0.0.0.0 follows DHCP address changes; requests are still limited to loopback and the LAN subnet.
+Environment=NETWORK_WEB_HOST=0.0.0.0
+Environment=NETWORK_WEB_PORT=8088
+EnvironmentFile=-%h/netwarden/deploy/model.env
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+UMask=0077
+
+[Install]
+WantedBy=default.target

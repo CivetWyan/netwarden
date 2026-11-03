@@ -1,0 +1,22 @@
+[Unit]
+Description=Network Repair Master local network administrator
+After=NetworkManager.service network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory="/opt/网络修复大师"
+ExecStart="/usr/bin/node" "/opt/网络修复大师/src/daemon.mjs"
+Environment="NETWORK_REPAIR_HOME=/opt/网络修复大师/runtime-service"
+EnvironmentFile=-"/opt/网络修复大师/deploy/model.env"
+Restart=always
+RestartSec=3
+TimeoutStopSec=90
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

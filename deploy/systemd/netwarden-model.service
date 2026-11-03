@@ -1,0 +1,27 @@
+# Optional user-level unit that runs a dedicated Ollama instance for the local model and keeps it
+# resident. Skip this if you already run an OpenAI-compatible server (Ollama, LM Studio, vLLM...).
+# Note: do NOT add After=default.target here; with WantedBy=default.target that creates an ordering
+# cycle and systemd silently drops the agent at boot.
+[Unit]
+Description=Netwarden local model (Ollama)
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env ollama serve
+ExecStartPost=/usr/bin/env node %h/netwarden/deploy/warm-model.mjs
+TimeoutStartSec=240
+Environment=OLLAMA_HOST=127.0.0.1:18080
+Environment=NETWARDEN_MODEL=netwarden-qwen
+# Pin one GPU if the host has several (uncomment and set the GPU UUID from `nvidia-smi -L`).
+# Environment=CUDA_VISIBLE_DEVICES=GPU-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+Environment=OLLAMA_NUM_PARALLEL=1
+Environment=OLLAMA_MAX_LOADED_MODELS=1
+Environment=OLLAMA_CONTEXT_LENGTH=16384
+Environment=OLLAMA_FLASH_ATTENTION=1
+Environment=OLLAMA_KV_CACHE_TYPE=q8_0
+Environment=OLLAMA_KEEP_ALIVE=-1
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

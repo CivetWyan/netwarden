@@ -1,0 +1,77 @@
+{
+  "name": "network-repair-master",
+  "version": "0.3.0",
+  "description": "面向小米路由器的本地 AI 网络自愈工具：本地小模型即时诊断修复，在线大模型复盘沉淀可复用方案",
+  "main": "electron/main.cjs",
+  "private": true,
+  "scripts": {
+    "start": "node scripts/start.mjs",
+    "daemon": "node src/daemon.mjs",
+    "diagnose": "node src/daemon.mjs --once",
+    "test": "node --test tests/*.test.mjs",
+    "test:ui": "node scripts/ui-smoke.mjs",
+    "knowledge:import": "node scripts/import-knowledge.mjs",
+    "dist": "electron-builder",
+    "pack": "electron-builder --dir",
+    "test:report": "node --test --test-reporter=junit --test-reporter-destination=test-results/core-junit.xml tests/*.test.mjs",
+    "service:generate": "node scripts/generate-service.mjs",
+    "prepare:electron": "node scripts/prepare-electron.mjs",
+    "test:online": "node scripts/test-online.mjs",
+    "test:live-agent": "node scripts/test-live-agent.mjs"
+  },
+  "devDependencies": {
+    "electron": "^42.0.0",
+    "electron-builder": "^26.0.12",
+    "playwright": "^1.56.1"
+  },
+  "build": {
+    "appId": "local.netwarden.desktop",
+    "productName": "网络修复大师",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**",
+      "src/**",
+      "ui/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "knowledge",
+        "to": "knowledge"
+      }
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.utilities",
+      "identity": null
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Network"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "author": "CivetWyan",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CivetWyan/netwarden.git"
+  }
+}
