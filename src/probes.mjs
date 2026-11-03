@@ -86,12 +86,18 @@ export async function gatewayProbe(gateway, timeoutMs, signal, platform = proces
   const result = platform === 'linux' && r.code === 'ENOENT' ? await run('ping', args, { timeout: timeoutMs + 200, signal }) : r;
   return { ok: result.ok, gateway, ms: Math.round(performance.now() - start), error: result.ok ? undefined : result.stderr };
 }
+// Fastest successful TCP connect above this means the uplink is congested, not down.
+export const CONGESTION_MS = 800;
 export function classify(snapshot) {
   const { network: n, tcp, dns: d, http: h } = snapshot;
   if (!n.interfaces.length) return { kind: 'link_down', severity: 'offline', summary: '没有可用的非回环 IP 地址' };
   if (n.routeKnown && !n.route) return { kind: 'no_route', severity: 'offline', summary: '未发现默认路由' };
   const canary = d.find(p => p.canary);
-  const tcpOk = tcp.some(p => p.ok); const dnsOk = d.some(p => !p.canary && p.ok) && (!canary || canary.ok);
+  // The canary (an uncached random name) needs a full upstream recursion, so it is the first thing to time
+  // out when the uplink is merely slow. It alone never makes the network "offline": names already
+  // resolving means users can still browse. Offline DNS = every ordinary name fails too.
+  const tcpOk = tcp.some(p => p.ok); const dnsOk = d.some(p => !p.canary && p.ok);
+  const slowest = tcp.filter(p => p.ok).reduce((m, p) => Math.min(m, p.ms ?? 0), Infinity);
   const r = snapshot.router;
   if (r?.enabled && !tcpOk && !h.ok) {
     // Router layer first: it explains *where* the outage is, which decides the repair.
@@ -106,6 +112,8 @@ export function classify(snapshot) {
   if (!tcpOk && !h.ok) return { kind: 'upstream_failure', severity: 'offline', summary: '外网探针均不可达；网关 ICMP 仅作为辅助证据' };
   if (!dnsOk) return { kind: 'dns_failure', severity: 'offline', summary: 'DNS 查询失败' };
   if (!n.routeKnown || !tcpOk || tcp.some(p => !p.ok)) return { kind: 'partial_failure', severity: 'degraded', summary: '部分核心探针异常，暂不执行破坏性恢复' };
+  if (canary && !canary.ok) return { kind: 'dns_slow', severity: 'degraded', summary: '常用域名解析正常，但未缓存的新域名查询超时：上游 DNS 变慢', warnings: ['仅记录，不触发修复'] };
+  if (slowest >= CONGESTION_MS) return { kind: 'congestion', severity: 'degraded', summary: `外网可达但明显变慢（最快 TCP 连接 ${slowest} ms），疑似上游拥塞`, warnings: ['仅记录，不触发修复'] };
   const warnings = !h.skipped && !h.ok ? ['HTTP 辅助探针无应答；核心 IP 与 DNS 连通性正常'] : [];
   return { kind: 'healthy', severity: 'healthy', summary: warnings.length ? '路由、外网与 DNS 正常；HTTP 辅助探针异常' : '默认路由、外网和 DNS 探测正常', warnings };
 }

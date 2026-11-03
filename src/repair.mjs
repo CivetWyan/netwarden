@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { wanDiff } from './router.mjs';
+import { isVirtualDevice } from './platform.mjs';
 
 export const LOCAL_ACTIONS = ['flush_dns', 'renew_dhcp', 'reconnect', 'set_dns'];
 export const ROUTER_ACTIONS = ['router_restore_wan', 'router_reconnect_wan', 'router_change_identity', 'router_reboot'];
@@ -7,7 +8,7 @@ export const ACTIONS = [...LOCAL_ACTIONS, ...ROUTER_ACTIONS];
 export class Repair {
   constructor(store, platform, sensor, router = null, app = null) {
     this.store = store; this.platform = platform; this.sensor = sensor; this.router = router; this.app = app; this.busy = false;
-    this.attempts = new Map(store.read('repair-attempts.json', [])); this.rollback = store.read('rollback.json', null); this.routerRollback = store.read('router-rollback.json', null);
+    this.attempts = new Map(store.read('repair-attempts.json', [])); this.rollback = store.read('rollback.json', null); this.routerRollback = store.read('router-rollback.json', null); this.lastRebootAt = store.read('router-reboots.json', {}).lastAt || 0;
   }
   async recoverPending() {
     if (this.rollback) { this.store.log('rollback', '发现上次未完成的 DNS 事务，优先恢复原配置', this.rollback); await this.restore(); }
@@ -18,6 +19,7 @@ export class Repair {
       this.routerRollback = null; this.store.write('router-rollback.json', null);
     }
   }
+  rebootCooldownLeft(now = Date.now()) { return Math.max(0, this.lastRebootAt + this.store.config.router.rebootCooldownMs - now); }
   async restore() {
     if (!this.rollback) return { ok: true, skipped: true };
     const transaction = this.rollback;
@@ -31,6 +33,7 @@ export class Repair {
     const router = this.router; const cfg = this.store.config.router;
     if (!router?.enabled) return { ok: false, blocked: true, error: '未启用路由器管理' };
     if (action === 'router_reboot') {
+      this.lastRebootAt = Date.now(); this.store.write('router-reboots.json', { lastAt: this.lastRebootAt });
       const j = await router.reboot(signal);
       const ready = await router.waitReady(cfg.rebootWaitMs, signal);
       return { ok: j.code === 0 && ready.ready, code: j.code, readyTrace: ready.trace.slice(-8), error: ready.ready ? undefined : '路由器重启后在等待时间内未恢复 WAN' };
@@ -97,7 +100,11 @@ export class Repair {
       if ([...this.attempts.keys()].filter(k => k.startsWith(`${incidentId}:`)).length >= config.maxActions) return { ok: false, blocked: true, error: '本轮修复动作预算已耗尽' };
       const current = evidence.network.connection;
       const baseline = this.store.baseline?.network?.connection;
-      const connection = current || (['link_down', 'no_route'].includes(evidence.health.kind) ? baseline : null);
+      // With no default route the "current" connection may be whatever else is up (e.g. a container bridge);
+      // the uplink that carried the route while healthy is the one worth reconnecting.
+      const noUplink = ['link_down', 'no_route'].includes(evidence.health.kind) || !evidence.network.route;
+      const connection = noUplink && baseline && (!current || current.device !== baseline.device) ? baseline : current || (noUplink ? baseline : null);
+      if (['renew_dhcp', 'reconnect'].includes(action) && isVirtualDevice(connection?.device)) return { ok: false, blocked: true, error: `不对虚拟网卡 ${connection.device} 执行本机网络动作` };
       if (action === 'renew_dhcp' && (!config.allowDhcp || connection?.method !== 'auto')) return { ok: false, blocked: true, error: 'DHCP 续租未授权或该连接不是自动地址配置' };
       if (action === 'reconnect' && !config.allowReconnect) return { ok: false, blocked: true, error: '重连未授权' };
       if (action === 'set_dns' && (!config.allowDnsChange || evidence.health.kind !== 'dns_failure' || !current || !Array.isArray(current.dns))) return { ok: false, blocked: true, error: '仅允许在明确 DNS 故障、原配置完整且已授权时替换 DNS' };
@@ -105,6 +112,7 @@ export class Repair {
       if (action === 'router_reconnect_wan' && !rc.allowReconnect) return { ok: false, blocked: true, error: '路由器 WAN 重连未授权' };
       if (action === 'router_change_identity' && !rc.allowIdentityChange) return { ok: false, blocked: true, error: '更换 WAN 身份未授权' };
       if (action === 'router_reboot' && !rc.allowReboot) return { ok: false, blocked: true, error: '路由器重启未授权' };
+      if (action === 'router_reboot' && this.rebootCooldownLeft() > 0) return { ok: false, blocked: true, error: `距上次重启路由器不足冷却时间，还需 ${Math.ceil(this.rebootCooldownLeft() / 60000)} 分钟` };
       if (isRouter && (!evidence.router?.reachable || evidence.router.authError)) return { ok: false, blocked: true, error: `路由器管理接口不可用：${evidence.router?.authError || evidence.router?.error || '未启用'}` };
       if (this.rollback) return { ok: false, blocked: true, error: '有尚未恢复的 DNS 事务；先处理回滚' };
       this.attempts.set(key, Date.now()); if (this.attempts.size > 200) this.attempts.delete(this.attempts.keys().next().value);

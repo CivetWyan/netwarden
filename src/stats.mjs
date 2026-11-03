@@ -2,6 +2,8 @@
 // the local model heals itself (per product rule); it only resets on a user-visible unresolved outage.
 const RESTART_GRACE_MS = 5 * 60 * 1000; // a brief service/host restart does not count as an interruption
 const GB = 1024 ** 3;
+// An outage users clearly feel. Shorter blips that end on their own are "self-recovered", not "unfixed".
+export const PERCEIVABLE_MS = 60 * 1000;
 export class Stats {
   constructor(store) {
     this.store = store;
@@ -36,14 +38,16 @@ export class Stats {
     s.lastSampleAt = now; this.persist();
   }
   // outcome: 'fixed' (a verified action restored it), 'self' (recovered on its own), 'unfixed'.
-  recordIncident({ createdAt, kind, outcome, recoveryMs } = {}, now = Date.now()) {
+  recordIncident({ createdAt, kind, outcome, recoveryMs, recoveredAt } = {}, now = Date.now()) {
     const s = this.s; const cAt = Date.parse(createdAt) || now;
     if (outcome === 'fixed') { s.fixedCount++; if (recoveryMs > 0) s.sumFixMs += recoveryMs; s.lastFix = { at: new Date(now).toISOString(), kind, recoveryMs: recoveryMs || null }; }
     else if (outcome === 'self') { s.selfRecoveredCount++; }
     else { // user-visible outage: retroactively end the streak at the incident's start
       s.unfixedCount++; s.lastOutage = { at: new Date(cAt).toISOString(), kind };
-      if (s.healthySince != null) { const streak = cAt - s.healthySince; if (streak > s.longestHealthyMs) s.longestHealthyMs = streak; }
-      s.healthySince = null; if (s.outageSince == null) s.outageSince = cAt;
+      if (s.healthySince != null && s.healthySince < cAt) { const streak = cAt - s.healthySince; if (streak > s.longestHealthyMs) s.longestHealthyMs = streak; }
+      const rAt = Date.parse(recoveredAt);
+      if (Number.isFinite(rAt) && s.outageSince == null) { s.totalOutageMs += Math.max(0, rAt - cAt); s.healthySince = rAt; } // already over
+      else { s.healthySince = null; if (s.outageSince == null) s.outageSince = cAt; }
     }
     this.persist(true);
   }
@@ -56,18 +60,21 @@ export class Stats {
     if (Number.isFinite(downBps)) this.live.downBps = downBps;
     this.persist();
   }
-  snapshot(now = Date.now()) {
-    const s = this.s; const broken = s.outageSince != null;
+  // ongoingSince: start of the incident in progress, if any; it shows as broken once users clearly feel it.
+  snapshot(now = Date.now(), { ongoingSince = null } = {}) {
+    const s = this.s; const ongoing = ongoingSince != null && now - ongoingSince >= PERCEIVABLE_MS;
+    const broken = s.outageSince != null || ongoing; const brokenFrom = s.outageSince ?? ongoingSince;
     const currentHealthyMs = !broken && s.healthySince != null ? now - s.healthySince : 0;
+    const streakBeforeOutage = ongoing && s.healthySince != null && s.healthySince < ongoingSince ? ongoingSince - s.healthySince : 0;
     const total = s.fixedCount + s.unfixedCount;
     return {
       deployedAt: s.deployedAt, runtimeMs: now - s.deployedAt,
-      broken, brokenMs: broken ? now - s.outageSince : 0,
-      currentHealthyMs, longestHealthyMs: Math.max(s.longestHealthyMs, currentHealthyMs),
+      broken, brokenMs: broken ? now - brokenFrom : 0,
+      currentHealthyMs, longestHealthyMs: Math.max(s.longestHealthyMs, currentHealthyMs, streakBeforeOutage),
       fixedCount: s.fixedCount, unfixedCount: s.unfixedCount, selfRecoveredCount: s.selfRecoveredCount,
       successRate: total ? s.fixedCount / total : null, avgFixMs: s.fixedCount ? Math.round(s.sumFixMs / s.fixedCount) : null,
       uploadGB: s.uploadBytes / GB, downloadGB: s.downloadBytes / GB, upBps: this.live.upBps, downBps: this.live.downBps,
-      totalOutageMs: s.totalOutageMs + (broken ? now - s.outageSince : 0), upMsHealthy: s.upMsHealthy,
+      totalOutageMs: s.totalOutageMs + (broken ? now - brokenFrom : 0), upMsHealthy: s.upMsHealthy,
       lastFix: s.lastFix, lastOutage: s.lastOutage
     };
   }

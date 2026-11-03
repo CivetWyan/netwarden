@@ -13,9 +13,9 @@ export const defaults = {
   monitor: { enabled: true, intervalMs: 1500, probeTimeoutMs: 1600, failureThreshold: 2, recoveryThreshold: 2, cooldownMs: 60000,
     tcpTargets: [{ host: '1.1.1.1', port: 443 }, { host: '223.5.5.5', port: 443 }],
     dnsHosts: ['www.baidu.com', 'example.com'], dnsCanary: 'baidu.com', httpUrl: 'http://connectivitycheck.gstatic.com/generate_204' },
-  repair: { enabled: false, allowReconnect: true, allowDhcp: true, allowDnsChange: false, fallbackDns: ['223.5.5.5', '1.1.1.1'], verifyDelayMs: 2500, rollbackMs: 20000, maxActions: 4, fastDecision: true, votes: 3 },
+  repair: { enabled: false, allowReconnect: true, allowDhcp: true, allowDnsChange: false, fallbackDns: ['223.5.5.5', '1.1.1.1'], verifyDelayMs: 2500, rollbackMs: 20000, maxActions: 4, fastDecision: true, votes: 3, observeMs: 20000 },
   // Router actions are limited to: restore WAN to the last healthy baseline, re-apply current WAN, reboot.
-  router: { enabled: false, host: '', password: '', timeoutMs: 4000, pollMs: 5000, allowRestore: true, allowReconnect: true, allowReboot: true, allowIdentityChange: false, identityIps: [], identityProbeCount: 6, identityLearnMs: 1800000, baselineSettleMs: 600000, rebootWaitMs: 180000 },
+  router: { enabled: false, host: '', password: '', timeoutMs: 4000, pollMs: 5000, allowRestore: true, allowReconnect: true, allowReboot: true, allowIdentityChange: false, identityIps: [], identityProbeCount: 6, identityLearnMs: 1800000, baselineSettleMs: 600000, rebootWaitMs: 180000, rebootMinOutageMs: 60000, rebootCooldownMs: 21600000 },
   knowledgePath: '', startAtLogin: false
 };
 function merge(a, b) {
@@ -66,6 +66,7 @@ export function validateConfig(c) {
   for (const v of [r.enabled, r.allowRestore, r.allowReconnect, r.allowReboot, r.allowIdentityChange, c.repair.fastDecision]) if (typeof v !== 'boolean') throw Error('路由器开关必须是布尔值');
   if (!Array.isArray(r.identityIps) || r.identityIps.length > 16 || r.identityIps.some(ip => !/^\d{1,3}(\.\d{1,3}){3}$/.test(ip) || ip.split('.').some(n => +n > 255))) throw Error('备用静态 IP 名单无效');
   int(r.identityProbeCount, 1, 30, '空闲 IP 探测数'); int(r.identityLearnMs, 60000, 86400000, '邻居采样间隔');
+  int(r.rebootMinOutageMs, 0, 3600000, '重启前最短故障时长'); int(r.rebootCooldownMs, 0, 604800000, '重启冷却时间'); int(c.repair.observeMs, 0, 300000, '观察等待时长');
   int(r.timeoutMs, 500, 30000, '路由器请求超时'); int(r.pollMs, 1000, 600000, '路由器轮询间隔'); int(r.baselineSettleMs, 0, 86400000, '路由器基线稳定时间'); int(r.rebootWaitMs, 60000, 600000, '路由器重启等待'); int(c.repair.votes, 1, 5, '快速决策投票次数');
   return c;
 }

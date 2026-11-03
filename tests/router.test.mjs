@@ -81,16 +81,46 @@ test('本地模型选了不在候选里的动作：判为无效票，按规则�
   assert.ok(app.store.events.some(e => e.type === 'decision' && e.data.votes?.[0]?.raw === 'flush_dns'));
 });
 test('本地模型先选了有效但错误的动作，根据失败反馈改选恢复基线', async t => {
-  const { app, router, ctx } = await setup(t, { decisions: [{ action: 'router_reconnect_wan', reason: '先重连' }, { action: 'router_restore_wan', reason: '配置漂移' }] });
-  router.state.details.dns = ['10.255.255.1']; ctx.kind = 'dns_failure';
+  // WAN down AND config drifted: both reconnect and restore are offered; the first (wrong) pick fails.
+  const { app, router, ctx } = await setup(t, { decisions: [{ action: 'router_reconnect_wan', reason: '先重连' }, { action: 'router_restore_wan', reason: '配置漂移' }], config: { router: { allowReboot: false } } });
+  router.state.details.gateway = '198.51.100.253'; ctx.upstreamOk = false; ctx.kind = 'upstream_failure';
   const task = await incident(app);
   assert.equal(task.status, 'completed'); assert.deepEqual(task.steps.map(s => [s.action, s.source, s.verified]), [['router_reconnect_wan', 'qwen', false], ['router_restore_wan', 'qwen', true]]);
 });
-test('模型选择重启路由器时，若仍有低代价候选，规则护栏改选', async t => {
-  const { app, router, ctx } = await setup(t, { decisions: [{ action: 'router_reboot', reason: '直接重启' }] });
-  router.state.details.gateway = '198.51.100.253'; ctx.kind = 'upstream_failure';
+test('重启路由器只在路由器侧故障持续较久、且不在冷却期时才成为候选', async t => {
+  const { app, router, ctx } = await setup(t);
+  const { triage } = await import('../src/triage.mjs');
+  router.state.link = 0; ctx.upstreamOk = false; ctx.kind = 'upstream_failure';
+  app.router.lastStatus = null; const snap = await app.sensor.sample({ fresh: true });
+  assert.ok(!(await triage(app, snap, undefined, { incidentAgeMs: 5000 })).candidates.some(c => c.action === 'router_reboot'), '故障刚发生不重启');
+  router.state.link = 1; router.state.details.gateway = '198.51.100.254'; app.router.lastStatus = null; ctx.upstreamOk = false;
+  const snap2 = await app.sensor.sample({ fresh: true });
+  assert.ok((await triage(app, snap2, undefined, { incidentAgeMs: 120000 })).candidates.some(c => c.action === 'router_reboot'), '持续 2 分钟且上游网关不通时允许重启');
+  app.repair.lastRebootAt = Date.now();
+  assert.ok(!(await triage(app, snap2, undefined, { incidentAgeMs: 120000 })).candidates.some(c => c.action === 'router_reboot'), '冷却期内不再重启');
+});
+test('WAN 已连接且上游网关可达时，不重连 WAN 也不重启路由器，先观察', async t => {
+  const { app, ctx } = await setup(t);
+  const { triage } = await import('../src/triage.mjs');
+  ctx.kind = 'dns_failure'; const snap = await app.sensor.sample({ fresh: true });
+  const card = await triage(app, snap, undefined, { incidentAgeMs: 600000 });
+  assert.equal(card.candidates[0].action, 'observe');
+  assert.ok(!card.candidates.some(c => ['router_reconnect_wan', 'router_reboot'].includes(c.action)), JSON.stringify(card.candidates.map(c => c.action)));
+});
+test('模型弃权时按观察处理，瞬时故障自行恢复不改配置，统计为自行恢复', async t => {
+  const { app, router, ctx } = await setup(t, { decisions: [{ action: null, reason: '无配置漂移，等待自愈' }] });
+  ctx.kind = 'dns_failure';
+  setTimeout(() => { ctx.kind = 'healthy'; }, 300);
   const task = await incident(app);
-  assert.equal(router.state.reboots, 0); assert.equal(task.steps[0].source, 'rule_guard'); assert.equal(task.steps[0].overridden, 'router_reboot'); assert.equal(task.status, 'completed');
+  assert.equal(task.status, 'completed'); assert.equal(task.steps[0].action, 'observe'); assert.equal(task.selfRecovered, true);
+  assert.equal(router.state.writes.length, 0); assert.equal(router.state.reboots, 0);
+});
+test('统计：短暂抖动算自行恢复；持续超过一分钟且没修好才算未修复', async t => {
+  const { app } = fixture(t); const t0 = Date.now();
+  app.finalizeIncidentStats({ createdAt: new Date(t0 - 10000).toISOString(), recoveredAt: new Date(t0).toISOString(), kind: 'dns_failure' });
+  app.finalizeIncidentStats({ createdAt: new Date(t0 - 120000).toISOString(), recoveredAt: new Date(t0).toISOString(), kind: 'upstream_failure' });
+  const s = app.stats.snapshot();
+  assert.equal(s.selfRecoveredCount, 1); assert.equal(s.unfixedCount, 1); assert.equal(s.broken, false);
 });
 test('本地模型不可用时按规则兜底，仍能恢复', async t => {
   const { app, router, ctx } = await setup(t, { decisions: [Error('model down')] });

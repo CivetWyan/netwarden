@@ -45,7 +45,9 @@ export class Model {
         else if (typeof json.final === 'string') content = json.final;
         else throw Error('JSON 模式必须返回 {tool,arguments} 或 {final}');
       }
-      if (tool_calls && (!Array.isArray(tool_calls) || tool_calls.length > 8)) throw Error('每轮最多接受 8 个工具调用');
+      if (tool_calls && !Array.isArray(tool_calls)) throw Error('模型工具调用格式错误');
+      // Small models sometimes fire a burst of calls; run the first 8 instead of failing the whole task.
+      if (tool_calls?.length > 8) tool_calls = tool_calls.slice(0, 8);
       const seen = new Set();
       const calls = (tool_calls || []).map(t => {
         if (typeof t?.id !== 'string' || seen.has(t.id) || typeof t?.function?.name !== 'string' || typeof t?.function?.arguments !== 'string') throw Error('模型工具调用格式错误或 ID 重复');

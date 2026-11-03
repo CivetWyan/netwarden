@@ -26,7 +26,7 @@ test('Ubuntu首次启动即缺失默认路由时，仍从NetworkManager读取已
   const seen = []; const p = new Platform({ platform: 'linux', run: async (file, args) => {
     seen.push([file, args]); const joined = args.join(' ');
     if (file === 'ip') return { ok: true, stdout: '[]' };
-    if (joined.includes('GENERAL.DEVICE')) return { ok: true, stdout: 'GENERAL.DEVICE:enp1s0\nGENERAL.STATE:100 (connected)\nGENERAL.CONNECTION:Wired\n' };
+    if (joined.includes('GENERAL.DEVICE')) return { ok: true, stdout: 'GENERAL.DEVICE:lxdbr0\nGENERAL.TYPE:bridge\nGENERAL.STATE:100 (connected)\nGENERAL.CONNECTION:lxdbr0\n\nGENERAL.DEVICE:enp1s0\nGENERAL.TYPE:ethernet\nGENERAL.STATE:100 (connected)\nGENERAL.CONNECTION:Wired\n' };
     if (joined.includes('GENERAL.CONNECTION')) return { ok: true, stdout: 'Wired\n' };
     if (joined.includes('connection.uuid')) return { ok: true, stdout: 'aabbccdd-1111-2222-3333-123456789abc\nauto\n\nno\n' };
     return { ok: true, stdout: '' };

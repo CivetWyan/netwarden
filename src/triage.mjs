@@ -4,6 +4,7 @@ import { wanDiff } from './router.mjs';
 // Fixed vocabulary shared by triage, fast decisions, playbooks and online reviews.
 export const SIGNALS = ['local.no_address', 'local.no_route', 'lan.router_unreachable', 'router.auth_failed', 'wan.link_down', 'wan.disconnected', 'wan.config_drift', 'wan.type_changed', 'wan.ip_changed', 'wan.gateway_changed', 'wan.dns_changed', 'wan.speed_changed', 'wan.dns_unreachable', 'router_dns.failed', 'dns.intercepted', 'public_dns.ok', 'public_dns.failed', 'upstream_gateway.ok', 'upstream_gateway.unreachable', 'internet.tcp_failed', 'dns.failed', 'http.portal', 'wan.segment_alive', 'wan.segment_down', 'wan.suspected_ban'];
 export const ACTION_INFO = {
+  observe: { layer: 'none', cost: 0, text: '不改任何配置，持续观察约 20 秒。适用于没有指向配置漂移或链路断开的信号、看起来像瞬时抖动或上游拥塞的情况；期间恢复即结束' },
   router_restore_wan: { layer: 'router', cost: 1, text: '把路由器 WAN 配置（上网方式/IP/网关/DNS/WAN口速率）恢复为最近一次健康基线。只在存在配置漂移时有效；约 5 秒（速率恢复约 35 秒），不断 WiFi' },
   router_reconnect_wan: { layer: 'router', cost: 2, text: '按路由器当前 WAN 配置重新应用（重新获取地址/重拨）。适用于配置没变但 WAN 掉线；约 5–45 秒' },
   flush_dns: { layer: 'local', cost: 1, text: '清空本机 DNS 缓存。只能修复本机缓存的错误解析，不能修复上游 DNS 服务器不可达或路由器 DNS 配置错误' },
@@ -14,7 +15,7 @@ export const ACTION_INFO = {
 };
 const PUBLIC_DNS = '223.5.5.5';
 
-export async function triage(app, snapshot, signal) {
+export async function triage(app, snapshot, signal, { incidentAgeMs = 0, observed = false } = {}) {
   const c = app.store.config; const r = snapshot.router; const timeout = c.monitor.probeTimeoutMs;
   const query = app.sensor.probes.query || dnsQuery; const ping = app.sensor.probes.upstream || gatewayProbe;
   const signals = new Set(); const evidence = {}; let drift = [];
@@ -81,6 +82,14 @@ export async function triage(app, snapshot, signal) {
   const router = r?.enabled && r.reachable && !r.authError; const rc = c.router; const rp = c.repair;
   const candidates = [];
   const add = (action, why) => { if (!candidates.some(x => x.action === action)) candidates.push({ action, why }); };
+  // Watch before touching anything unless there is a deterministic cheap fix (config drift). Many outages
+  // are seconds-long upstream hiccups; acting on them only causes a real outage.
+  // A ban does not lift by itself, so waiting would only lengthen the outage.
+  if (!observed && !has('wan.config_drift') && layer !== 'suspected_ban') add('observe', '没有指向可修复配置的信号，先观察是否瞬时抖动');
+  // Router-side actions need router-side evidence. With WAN connected and its upstream gateway answering,
+  // the router is doing its job: reconnecting or rebooting it cannot fix the upstream.
+  const routerSuspect = has('wan.disconnected') || has('wan.link_down') || has('upstream_gateway.unreachable');
+  const rebootCooldown = app.repair?.rebootCooldownLeft?.() || 0;
   if (layer === 'local' || layer === 'lan') {
     if (rp.allowDhcp && (snapshot.network.connection?.method === 'auto' || app.store.baseline?.network?.connection?.method === 'auto')) add('renew_dhcp', '本机地址/路由层异常');
     if (rp.allowReconnect) add('reconnect', '本机或无线链路层异常');
@@ -88,10 +97,11 @@ export async function triage(app, snapshot, signal) {
   if (router && has('wan.config_drift') && rc.allowRestore && app.routerBaseline) add('router_restore_wan', '检测到 WAN 配置漂移');
   if (has('dns.failed') && (layer === 'dns' || layer === 'router_dns')) add('flush_dns', '可能是本机缓存的失败解析');
   if (router && rc.allowIdentityChange && layer === 'suspected_ban') add('router_change_identity', '疑似被园区按 IP/MAC 封禁，按运营方认可方式更换身份');
-  if (router && rc.allowReconnect && layer !== 'local' && layer !== 'lan') add('router_reconnect_wan', '重新建立 WAN 连接');
-  // A physically down WAN link is not fixed by rebooting; report it instead of a 2-minute outage.
-  if (router && rc.allowReboot && !['local', 'lan', 'wan_physical'].includes(layer)) add('router_reboot', '最后手段');
+  if (router && rc.allowReconnect && routerSuspect && !['local', 'lan', 'suspected_ban'].includes(layer)) add('router_reconnect_wan', '路由器 WAN 未连通或上游网关无应答，重新建立 WAN 连接');
+  // Reboot only for a persistent router-side fault, never twice within the cooldown. A physically down
+  // WAN link is not fixed by rebooting; report it instead of causing a 2-minute studio-wide outage.
+  if (router && rc.allowReboot && routerSuspect && !['local', 'lan', 'wan_physical', 'suspected_ban'].includes(layer) && incidentAgeMs >= rc.rebootMinOutageMs && rebootCooldown <= 0) add('router_reboot', '最后手段：路由器侧故障已持续较久且其他动作无效');
   return { at: new Date().toISOString(), kind: snapshot.health.kind, layer, summary, signals: SIGNALS.filter(s => signals.has(s)), drift, evidence,
     candidates: candidates.map(x => ({ ...x, ...ACTION_INFO[x.action] })),
-    router: r?.enabled ? { reachable: r.reachable, authError: r.authError, wan: r.wan } : { enabled: false } };
+    router: r?.enabled ? { reachable: r.reachable, authError: r.authError, wan: r.wan } : { enabled: false }, rebootCooldownMs: rebootCooldown, incidentAgeMs };
 }

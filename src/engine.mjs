@@ -21,7 +21,7 @@ import { triage } from './triage.mjs';
 import { decide } from './decide.mjs';
 import { Playbooks } from './playbooks.mjs';
 import { Identity } from './identity.mjs';
-import { Stats } from './stats.mjs';
+import { Stats, PERCEIVABLE_MS } from './stats.mjs';
 
 export class Engine extends EventEmitter {
   constructor({ dir = path.join(ROOT, 'runtime'), codec, platform, probes, knowledgeDir, fetcher, routerFetcher } = {}) {
@@ -53,7 +53,7 @@ export class Engine extends EventEmitter {
     this.backgroundTimer = setInterval(() => this.background().catch(e => this.store.log('error', '后台调度失败', { error: e.message })), 1000);
   }
   state() {
-    return this.store.redact({ config: this.store.publicConfig(), current: this.sensor.current, router: this.sensor.current?.router || null, routerBaseline: this.routerBaseline ? { at: this.routerBaseline.at, reason: this.routerBaseline.reason, config: this.routerBaseline.config } : null, routerLocked: this.router.lockedReason, playbooks: this.playbooks.items.slice(-50), identity: { banned: this.identity.state.banned.slice(-10), witnesses: this.identity.state.witnesses, occupied: Object.keys(this.identity.state.occupied).length }, stats: this.stats.snapshot(), history: this.sensor.history, events: this.store.events.slice(-150), tasks: this.tasks.list().map(t => ({ ...t, canResume: !t.parentId && t.status !== 'running' && t.status !== 'completed' && this.sessions.exists(t.id) })), baseline: this.store.baseline, knowledge: this.knowledge.status(), incident: this.incident, startedAt: this.startedAt, runtime: this.store.dir, repairBusy: this.repair.busy, pendingRollback: this.repair.rollback, scripts: this.scripts.items.slice(-100), scriptRuns: this.scripts.runs.slice(-50), runbooks: this.runbooks.items.slice(-100), reviews: this.reviews.items.slice(-30), memory: this.memory.items.slice(-30), recoveredPending: this.recoveredPending });
+    return this.store.redact({ config: this.store.publicConfig(), current: this.sensor.current, router: this.sensor.current?.router || null, routerBaseline: this.routerBaseline ? { at: this.routerBaseline.at, reason: this.routerBaseline.reason, config: this.routerBaseline.config } : null, routerLocked: this.router.lockedReason, playbooks: this.playbooks.items.slice(-50), identity: { banned: this.identity.state.banned.slice(-10), witnesses: this.identity.state.witnesses, occupied: Object.keys(this.identity.state.occupied).length }, stats: this.stats.snapshot(Date.now(), { ongoingSince: this.incident ? Date.parse(this.incident.createdAt) : null }), history: this.sensor.history, events: this.store.events.slice(-150), tasks: this.tasks.list().map(t => ({ ...t, canResume: !t.parentId && t.status !== 'running' && t.status !== 'completed' && this.sessions.exists(t.id) })), baseline: this.store.baseline, knowledge: this.knowledge.status(), incident: this.incident, startedAt: this.startedAt, runtime: this.store.dir, repairBusy: this.repair.busy, pendingRollback: this.repair.rollback, scripts: this.scripts.items.slice(-100), scriptRuns: this.scripts.runs.slice(-50), runbooks: this.runbooks.items.slice(-100), reviews: this.reviews.items.slice(-30), memory: this.memory.items.slice(-30), recoveredPending: this.recoveredPending });
   }
   saveConfig(patch) {
     // Blank keys from the renderer mean "keep existing". Explicit clearApiKey handles removal.
@@ -81,7 +81,7 @@ export class Engine extends EventEmitter {
     if (this.closing || !this.active) return;
     this.stats.sample(s);
     if (s.stable === 'healthy' && s.health.kind === 'healthy') {
-      if (this.incident) { this.store.log('incident', '连续探针确认网络恢复', { incidentId: this.incident.id }); /* same object: the running task keeps appending steps */ this.recoveredPending.push(Object.assign(this.incident, { recoveredAt: s.at })); this.store.write('recovered-pending.json', this.recoveredPending); this.incident = null; this.store.write('incident.json', null); }
+      if (this.incident) { this.store.log('incident', '连续探针确认网络恢复', { incidentId: this.incident.id }); /* same object: the running task keeps appending steps */ const recoveredIncident = Object.assign(this.incident, { recoveredAt: s.at }); this.recoveredPending.push(recoveredIncident); if (recoveredIncident.statsPending) this.finalizeIncidentStats(recoveredIncident); this.store.write('recovered-pending.json', this.recoveredPending); this.incident = null; this.store.write('incident.json', null); }
       if (!this.repair.busy) this.maybeRouterBaseline(s);
       if (!this.repair.busy && s.network.connection && JSON.stringify({ connection: this.store.baseline?.network.connection, route: this.store.baseline?.network.route }) !== JSON.stringify({ connection: s.network.connection, route: s.network.route })) this.captureBaseline(s);
       return;
@@ -113,7 +113,8 @@ export class Engine extends EventEmitter {
       }
       // 1. Deterministic layered triage (seconds): where is the outage and what could fix it.
       this.tasks.update(task.id, { phase: '分层分诊' });
-      let card = await triage(this, s, signal);
+      const ageMs = () => Date.now() - Date.parse(incident.createdAt);
+      let card = await triage(this, s, signal, { incidentAgeMs: ageMs() });
       incident.triage ||= card; incident.signals = card.signals; if (this.incident === incident) this.store.write('incident.json', incident);
       this.store.log('triage', `分诊：${card.summary}`, { incidentId: incident.id, layer: card.layer, signals: card.signals, drift: card.drift, candidates: card.candidates.map(x => x.action), evidence: card.evidence });
       this.tasks.update(task.id, { triage: { layer: card.layer, summary: card.summary, signals: card.signals, drift: card.drift } });
@@ -140,7 +141,7 @@ export class Engine extends EventEmitter {
         if (!choice && cfg.repair.fastDecision && cfg.model.name) {
           this.tasks.update(task.id, { phase: '本地模型快速决策' });
           const d = await decide(this, card, remaining, tried, { playbook, signal });
-          this.store.log('decision', d.action ? `本地模型选择 ${d.action}` : '本地模型未给出有效动作，改用规则', { incidentId: incident.id, tally: d.tally, votes: d.votes, ms: d.ms });
+          this.store.log('decision', d.abstained && d.action === 'observe' ? '本地模型判断不应改动配置，先观察' : d.action ? `本地模型选择 ${d.action}` : '本地模型未给出有效动作，改用规则', { incidentId: incident.id, tally: d.tally, votes: d.votes, ms: d.ms });
           if (d.action) choice = { action: d.action, source: 'qwen', reason: d.reason, votes: d.tally, decideMs: d.ms };
         }
         if (!choice) choice = { action: remaining[0].action, source: 'rule', reason: remaining[0].why };
@@ -150,10 +151,16 @@ export class Engine extends EventEmitter {
           choice = { action: cheaper[0].action, source: 'rule_guard', reason: `${choice.source} 选择了重启；先尝试 ${cheaper[0].action}`, overridden: choice.action, votes: choice.votes, decideMs: choice.decideMs };
         }
         this.tasks.update(task.id, { phase: `执行 ${choice.action}` });
-        const result = await this.repair.execute(choice.action, choice.reason, { signal, incidentId: incident.id });
+        const result = choice.action === 'observe' ? await this.observe(signal, incident.id) : await this.repair.execute(choice.action, choice.reason, { signal, incidentId: incident.id });
         const entry = { at: new Date().toISOString(), action: choice.action, source: choice.source, reason: choice.reason, votes: choice.votes, decideMs: choice.decideMs, overridden: choice.overridden, verified: Boolean(result.verified), blocked: Boolean(result.blocked), error: result.error, permission: result.permission, ms: result.ms };
         tried.push(entry); incident.steps.push(entry); results.push({ action: choice.action, result });
-        if (result.verified) {
+        const recovered = choice.action === 'observe' ? result.verified : result.blocked && result.health && result.health.severity !== 'offline';
+        if (recovered) {
+          const v = choice.action === 'observe' ? { verified: true } : await this.verify(signal);
+          if (v.verified) return { status: 'completed', networkVerified: true, selfRecovered: true, triage: card, steps: tried, actions: results,
+            result: `网络在观察期内自行恢复（${card.summary}），未改动任何配置。从发现到恢复 ${Math.round(ageMs() / 1000)} 秒；动作链：${describe(tried)}` };
+        }
+        if (result.verified && choice.action !== 'observe') {
           const check = await this.verify(signal);
           if (check.verified) {
             if (playbook) this.playbooks.record(playbook.id, { success: true, action: choice.action, incidentId: incident.id });
@@ -164,7 +171,7 @@ export class Engine extends EventEmitter {
         }
         const fresh = await this.sensor.sample({ fresh: true });
         if (fresh.health.kind === 'healthy') { const v = await this.verify(signal); if (v.verified) return { status: 'completed', networkVerified: true, triage: card, steps: tried, actions: results, result: `网络已由连续探针确认恢复，但不是由某个已验证动作直接确认（可能自行恢复）。动作链：${describe(tried)}` }; }
-        card = await triage(this, fresh, signal);
+        card = await triage(this, fresh, signal, { incidentAgeMs: ageMs(), observed: tried.some(t => t.action === 'observe') });
         this.store.log('triage', `重新分诊：${card.summary}`, { incidentId: incident.id, layer: card.layer, signals: card.signals, candidates: card.candidates.map(x => x.action) });
       }
       if (playbook && tried.some(t => playbook.actions.includes(t.action) && !t.blocked)) this.playbooks.record(playbook.id, { success: false, action: null, incidentId: incident.id });
@@ -179,9 +186,7 @@ export class Engine extends EventEmitter {
         result: verification.verified ? `网络已由连续探针确认恢复。${unresolved.replace('自动恢复未成功', '快速恢复阶段未直接修复')}。模型分析：${analysis.result}` : `${unresolved}。模型分析：${analysis.result}` };
     });
     this.tasks.promises.get(task.id).finally(() => {
-      const t = this.tasks.get(task.id);
-      const outcome = incident.resolvedBy ? 'fixed' : (t?.networkVerified ? 'self' : 'unfixed');
-      this.stats.recordIncident({ createdAt: incident.createdAt, kind: incident.kind, outcome, recoveryMs: incident.recoveryMs });
+      this.finalizeIncidentStats(incident);
       this.autoBusy = false; this.emit('change');
     });
   }
@@ -260,6 +265,31 @@ export class Engine extends EventEmitter {
     const rc = this.store.config.router;
     if (rc.enabled && rc.allowIdentityChange && this.sensor.current?.router?.config?.wanType === 'static' && Date.now() - this.identity.state.lastLearn >= rc.identityLearnMs) await this.identity.learn(this.sensor.current.router.config).catch(e => this.store.log('error', '邻居采样失败', { error: e.message }));
     if (this.store.config.patrol.enabled && this.store.config.model.name && Date.now() - this.lastPatrol >= this.store.config.patrol.intervalMs) this.patrolNow();
+  }
+  // Outcome per product rule: a verified local fix is "fixed" (never breaks the healthy streak); an outage
+  // that ended without a fix counts as "unfixed" only if users clearly felt it, otherwise "self-recovered".
+  // Still down when the task ends → decided when the network comes back.
+  finalizeIncidentStats(incident) {
+    if (incident.statsDone) return;
+    const base = { createdAt: incident.createdAt, kind: incident.kind };
+    if (incident.resolvedBy) this.stats.recordIncident({ ...base, outcome: 'fixed', recoveryMs: incident.recoveryMs });
+    else if (incident.recoveredAt) {
+      const ms = Date.parse(incident.recoveredAt) - Date.parse(incident.createdAt);
+      this.stats.recordIncident({ ...base, outcome: ms >= PERCEIVABLE_MS ? 'unfixed' : 'self', recoveredAt: incident.recoveredAt });
+    } else { incident.statsPending = true; return; }
+    incident.statsDone = true; incident.statsPending = false;
+  }
+  // Watch without changing anything: succeed as soon as the network is confirmed healthy again.
+  async observe(signal, incidentId) {
+    const started = Date.now(); const end = started + this.store.config.repair.observeMs; const samples = [];
+    this.store.log('action', '观察等待：不改动配置', { incidentId, windowMs: this.store.config.repair.observeMs });
+    while (Date.now() < end) {
+      await sleep(this.store.config.monitor.intervalMs, undefined, { signal });
+      const s = await this.sensor.sample({ fresh: true }); samples.push(s.health.kind);
+      if (s.health.kind === 'healthy') { const v = await this.verify(signal); if (v.verified) { this.store.log('action_result', '观察期内网络自行恢复', { incidentId, ms: Date.now() - started }); return { ok: true, verified: true, ms: Date.now() - started, samples }; } }
+    }
+    this.store.log('action_result', '观察期结束，故障仍在', { incidentId, ms: Date.now() - started, last: samples.slice(-4) });
+    return { ok: false, verified: false, ms: Date.now() - started, samples, error: '观察期内未恢复' };
   }
   async verify(signal) {
     const samples = [];

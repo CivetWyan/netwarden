@@ -53,6 +53,7 @@ export class Agent {
         try { response = await a.model.complete(messages, tools, signal); }
         catch (e) {
           // A malformed JSON tool answer has no side effects, so let a small model repair its format once.
+          if (/输出被截断/.test(e.message) && !session.lengthRetry) { session.lengthRetry = true; messages.push({ role: 'user', content: '上一轮输出过长被截断，尚未执行任何工具。请一次只调用少量必要的工具，结论保持简短，然后继续。' }); checkpoint(); continue; }
           if (cfg.mode === 'json' && /JSON|工具调用格式/.test(e.message) && !session.formatRetry) { session.formatRetry = true; messages.push({ role: 'user', content: `上轮输出未通过协议解析，尚未执行工具：${e.message}。请只输出合法的{tool,arguments}或{final} JSON对象。` }); checkpoint(); continue; }
           throw e;
         }

@@ -32,16 +32,19 @@ export function parseResolverDns(text, device) {
   });
   return [...new Set(lines.flatMap(line => line.trim().split(/\s+/)).map(s => s.split('#')[0]).filter(s => isIP(s.split('%')[0])))];
 }
+export const isVirtualDevice = name => /^(lo|lxd|docker|br-|virbr|veth|tap|tun|vnet|wg|zt|tailscale|cni|flannel|podman|vmnet|vboxnet)/i.test(String(name || ''));
 export class Platform {
   constructor({ platform = process.platform, run = command, allowPrompts = false } = {}) { this.platform = platform; this.run = run; this.allowPrompts = allowPrompts; }
   async inspect(signal) {
     const run = (file, args) => this.run(file, args, { signal });
     const base = { platform: this.platform, interfaces: interfaces(), route: null, routeKnown: false, dns: [], connection: null, errors: [] };
     if (this.platform === 'linux') {
-      const [r4, r6, nm, dns] = await Promise.all([run('ip', ['-j', 'route', 'show', 'default']), run('ip', ['-j', '-6', 'route', 'show', 'default']), run('nmcli', ['--escape', 'no', '-t', '-f', 'GENERAL.DEVICE,GENERAL.STATE,GENERAL.CONNECTION,IP4.DNS', 'device', 'show']), run('resolvectl', ['dns'])]);
+      const [r4, r6, nm, dns] = await Promise.all([run('ip', ['-j', 'route', 'show', 'default']), run('ip', ['-j', '-6', 'route', 'show', 'default']), run('nmcli', ['--escape', 'no', '-t', '-f', 'GENERAL.DEVICE,GENERAL.TYPE,GENERAL.STATE,GENERAL.CONNECTION,IP4.DNS', 'device', 'show']), run('resolvectl', ['dns'])]);
       base.routeKnown = r4.ok && r6.ok;
       try { const r = [...JSON.parse(r4.stdout || '[]'), ...JSON.parse(r6.stdout || '[]')].sort((a,b) => (a.metric || 0) - (b.metric || 0))[0]; if (r) base.route = { gateway: r.gateway, interface: r.dev, family: r.gateway?.includes(':') ? 'IPv6' : 'IPv4' }; } catch { base.routeKnown = false; }
-      const connectedDevice = nm.stdout.split(/(?=GENERAL\.DEVICE:)/).find(block => /GENERAL\.STATE:100/.test(block))?.match(/GENERAL\.DEVICE:([^\n]+)/)?.[1]?.trim();
+      // Without a default route, fall back to a connected *uplink* NIC only. Bridges and virtual devices
+      // (LXD/Docker/libvirt bridges, tap/veth) are often "connected" too, and reconnecting them is useless.
+      const connectedDevice = nm.stdout.split(/(?=GENERAL\.DEVICE:)/).find(block => /GENERAL\.STATE:100/.test(block) && /GENERAL\.TYPE:(wifi|ethernet)\b/.test(block) && !isVirtualDevice(block.match(/GENERAL\.DEVICE:([^\n]+)/)?.[1]?.trim()))?.match(/GENERAL\.DEVICE:([^\n]+)/)?.[1]?.trim();
       const device = base.route?.interface || connectedDevice;
       if (device) {
         const detail = await run('nmcli', ['--escape', 'no', '-g', 'GENERAL.CONNECTION', 'device', 'show', device]);
